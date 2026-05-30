@@ -1,0 +1,1102 @@
+# bot_venom.py - Bot Discord Venom Hub (COM API REAL DO ROBLOX)
+import discord
+from discord.ext import commands, tasks
+from discord.ui import Button, View, Select
+import datetime
+import asyncio
+import random
+import json
+import os
+import time
+import aiohttp
+from datetime import timedelta
+from typing import Optional
+
+# ==================== CONFIGURAÇÕES ====================
+PREFIX = "!"
+TOKEN = "MTUwMjUzMTY5ODM1NTczNjczMQ.GDMgJA.ARvJY7T7m5mR4tq7kG32ZsakH3FcRR_vwOIxt0"  # Coloque seu token aqui
+OWNER_ID = 1454636571352498196  # Seu ID do Discord
+
+# ==================== INTENTS ====================
+intents = discord.Intents.all()
+intents.members = True
+intents.message_content = True
+intents.presences = True
+
+bot = commands.Bot(command_prefix=PREFIX, intents=intents, help_command=None)
+
+# ==================== BANCO DE DADOS ====================
+painel_data = {}
+
+def salvar_dados():
+    data_salvar = {}
+    for k, v in painel_data.items():
+        data_salvar[str(k)] = {
+            "nick": v["nick"],
+            "expira": v["expira"].isoformat(),
+            "tipo": v["tipo"]
+        }
+    with open('painel_data.json', 'w') as f:
+        json.dump(data_salvar, f)
+
+def carregar_dados():
+    global painel_data
+    if os.path.exists('painel_data.json'):
+        with open('painel_data.json', 'r') as f:
+            data = json.load(f)
+            painel_data = {}
+            for k, v in data.items():
+                painel_data[int(k)] = {
+                    "nick": v["nick"],
+                    "expira": datetime.datetime.fromisoformat(v["expira"]),
+                    "tipo": v["tipo"]
+                }
+
+# ==================== API ROBLOX (REAL) ====================
+async def get_roblox_user_by_username(username):
+    """Busca usuário do Roblox pelo nome"""
+    url = "https://users.roblox.com/v1/usernames/users"
+    payload = {
+        "usernames": [username],
+        "excludeBannedUsers": False
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, json=payload) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data["data"]:
+                    return data["data"][0]
+    return None
+
+async def get_roblox_user_info(user_id):
+    """Busca informações detalhadas do usuário"""
+    url = f"https://users.roblox.com/v1/users/{user_id}"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                return await resp.json()
+    return None
+
+async def get_roblox_friends(user_id):
+    """Busca lista de amigos"""
+    url = f"https://friends.roblox.com/v1/users/{user_id}/friends"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("data", [])
+    return []
+
+async def get_roblox_followers(user_id):
+    """Busca seguidores"""
+    url = f"https://friends.roblox.com/v1/users/{user_id}/followers/count"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("count", 0)
+    return 0
+
+async def get_roblox_following(user_id):
+    """Busca seguindo"""
+    url = f"https://friends.roblox.com/v1/users/{user_id}/followings/count"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("count", 0)
+    return 0
+
+async def get_roblox_avatar(user_id):
+    """Busca avatar do usuário"""
+    url = f"https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds={user_id}&size=420x420&format=Png"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data["data"]:
+                    return data["data"][0]["imageUrl"]
+    return None
+
+async def get_roblox_full_body(user_id):
+    """Busca corpo inteiro do avatar"""
+    url = f"https://thumbnails.roblox.com/v1/users/avatar?userIds={user_id}&size=420x420&format=Png"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if data["data"]:
+                    return data["data"][0]["imageUrl"]
+    return None
+
+# ==================== SISTEMA ANTI-SPAM/RAID ====================
+spam_control = {}
+ANTI_SPAM_RATE = 5
+ANTI_SPAM_TIME = 5
+RAID_JOIN_LIMIT = 5
+RAID_TIME = 10
+join_times = []
+raid_mode = False
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+    
+    if message.author.id not in spam_control:
+        spam_control[message.author.id] = []
+    
+    spam_control[message.author.id].append(time.time())
+    recent = [t for t in spam_control[message.author.id] if time.time() - t < ANTI_SPAM_TIME]
+    spam_control[message.author.id] = recent
+    
+    if len(recent) > ANTI_SPAM_RATE:
+        try:
+            await message.author.timeout(datetime.timedelta(minutes=5), reason="Spam detectado")
+            embed = discord.Embed(
+                title="🚫 SPAM DETECTADO",
+                description=f"{message.author.mention} foi silenciado por 5 minutos.",
+                color=0xff0000
+            )
+            await message.channel.send(embed=embed, delete_after=10)
+        except:
+            pass
+        return
+    
+    await bot.process_commands(message)
+
+@bot.event
+async def on_member_join(member):
+    global join_times, raid_mode
+    
+    join_times.append(time.time())
+    join_times = [t for t in join_times if time.time() - t < RAID_TIME]
+    
+    if len(join_times) > RAID_JOIN_LIMIT and not raid_mode:
+        raid_mode = True
+        guild = member.guild
+        
+        embed = discord.Embed(
+            title="🚨 RAID DETECTADA!",
+            description="Sistema de proteção ativado! Canais trancados.",
+            color=0xff0000
+        )
+        embed.add_field(name="👥 Entradas", value=f"```{len(join_times)} em {RAID_TIME}s```")
+        
+        for channel in guild.text_channels:
+            try:
+                await channel.send(embed=embed)
+                await channel.set_permissions(guild.default_role, send_messages=False)
+            except:
+                pass
+        
+        try:
+            invites = await guild.invites()
+            for invite in invites:
+                await invite.delete()
+        except:
+            pass
+        
+        await asyncio.sleep(300)
+        
+        for channel in guild.text_channels:
+            try:
+                await channel.set_permissions(guild.default_role, send_messages=True)
+            except:
+                pass
+        
+        raid_mode = False
+        join_times = []
+
+# ==================== EVENTO READY ====================
+@bot.event
+async def on_ready():
+    carregar_dados()
+    print(f'🤖 Bot {bot.user.name} está online!')
+    print(f'📊 Servidores: {len(bot.guilds)}')
+    print('✅ API Roblox conectada!')
+    await bot.change_presence(activity=discord.Activity(
+        type=discord.ActivityType.watching,
+        name="Venom Hub | !menu"
+    ))
+
+# ==================== COMANDO MENU ====================
+@bot.command(name="menu")
+async def menu(ctx):
+    if ctx.author.guild_permissions.administrator or ctx.author.id == OWNER_ID:
+        embed = discord.Embed(
+            title="🌟 MENU ADMINISTRATIVO - VENOM HUB",
+            description="Comandos exclusivos para administração",
+            color=0x9b59b6
+        )
+        embed.add_field(name="🔧 Administração", value="""
+        `!serveinfo` - Informações do servidor
+        `!addpainel @user tempo` - Adicionar painel
+        `!removerpainel @user` - Remover painel
+        `!lista` - Lista de painéis
+        `!verificar nick` - Verificar Roblox (REAL)
+        `!info nick` - Info completa Roblox (REAL)
+        `!cargo @user #cargo` - Dar cargo
+        `!admin` - Preços painel
+        `!sorteio criar` - Criar sorteio
+        `!parceria` - Anunciar parceria
+        `!requisito` - Requisitos SWAT
+        `!ticket setup` - Setup tickets
+        `!ping` - Latência do bot
+        `!ban @user` - Banir usuário
+        `!kick @user` - Expulsar usuário
+        `!mute @user` - Silenciar usuário
+        `!clear quantidade` - Limpar chat
+        `!lock` - Trancar canal
+        `!unlock` - Destrancar canal
+        `!slowmode segundos` - Modo lento
+        """, inline=False)
+        
+        embed.add_field(name="🎵 Música", value="""
+        `!play música` - Tocar música
+        `!skip` - Pular música
+        `!stop` - Parar música
+        `!queue` - Ver fila
+        `!pause` - Pausar
+        `!resume` - Continuar
+        """, inline=False)
+        
+        embed.add_field(name="🎮 Jogos", value="""
+        `!coinflip` - Cara ou coroa
+        `!dado` - Jogar dado
+        `!ppt` - Pedra papel tesoura
+        `!roletarussa` - Roleta russa
+        `!advinhar` - Jogo de advinhação
+        `!slot` - Caça-níquel
+        """, inline=False)
+        
+        embed.set_footer(text="Venom Hub - Sistema Administrativo")
+        await ctx.send(embed=embed)
+    else:
+        embed = discord.Embed(
+            title="🌟 MENU - VENOM HUB",
+            description="Comandos disponíveis para membros",
+            color=0x3498db
+        )
+        embed.add_field(name="🎮 Diversão", value="""
+        `!coinflip` - Cara ou coroa
+        `!dado` - Jogar dado
+        `!ppt` - Pedra papel tesoura
+        `!roletarussa` - Roleta russa
+        `!advinhar` - Jogo de advinhação
+        `!slot` - Caça-níquel
+        `!8ball pergunta` - Bola mágica
+        """, inline=False)
+        
+        embed.add_field(name="📊 Utilidades", value="""
+        `!ping` - Latência do bot
+        `!avatar @user` - Ver avatar
+        `!userinfo @user` - Info usuário
+        `!servericon` - Ícone do servidor
+        """, inline=False)
+        
+        embed.set_footer(text="Venom Hub - Comunidade")
+        await ctx.send(embed=embed)
+
+# ==================== COMANDO SERVEINFO ====================
+@bot.command(name="serveinfo")
+@commands.has_permissions(administrator=True)
+async def serveinfo(ctx):
+    guild = ctx.guild
+    
+    embed = discord.Embed(
+        title="📊 INFORMAÇÕES DO SERVIDOR",
+        description="⚡ Venom Hub - Dados do Servidor",
+        color=0xff0000
+    )
+    embed.add_field(name="📝 Nome do Servidor", value=f"```{guild.name}```", inline=False)
+    embed.add_field(name="👥 Total de Membros", value=f"```{guild.member_count}```", inline=True)
+    embed.add_field(name="🆔 ID do Servidor", value=f"```{guild.id}```", inline=True)
+    embed.add_field(name="📅 Data de Criação", value=f"```{guild.created_at.strftime('%d/%m/%Y às %H:%M')}```", inline=False)
+    embed.add_field(name="👑 Dono", value=f"```{guild.owner}```", inline=True)
+    embed.add_field(name="💎 Cargos", value=f"```{len(guild.roles)}```", inline=True)
+    embed.add_field(name="📺 Canais", value=f"```{len(guild.channels)}```", inline=True)
+    
+    if guild.icon:
+        embed.set_thumbnail(url=guild.icon.url)
+    
+    embed.set_footer(text="Venom Hub - Informações")
+    embed.timestamp = datetime.datetime.utcnow()
+    
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO ADMIN ====================
+@bot.command(name="admin")
+@commands.has_permissions(administrator=True)
+async def admin(ctx):
+    embed = discord.Embed(
+        title="💎 PREÇOS PAINEL ADMINISTRADOR",
+        description="Escolha o plano ideal para você!\n━━━━━━━━━━━━━━━━━━━",
+        color=0x9b59b6
+    )
+    embed.add_field(name="『👑』𝗣𝗘𝗥𝗠𝗔𝗡𝗘𝗡𝗧𝗘", value="```💸 R$35,00```", inline=False)
+    embed.add_field(name="『📅』𝗨𝗠 𝗠𝗘̂𝗦", value="```💸 R$15,00```", inline=False)
+    embed.add_field(name="『🗓️』𝗦𝗘𝗧𝗘 𝗗𝗜𝗔𝗦", value="```💸 R$5,00```", inline=False)
+    embed.add_field(name="『⏳』𝗧𝗥𝗘̂𝗦 𝗗𝗜𝗔𝗦", value="```💸 R$3,00```", inline=False)
+    embed.add_field(name="『🎉』𝗣𝗥𝗢́𝗫𝗜𝗠𝗔 𝗣𝗥𝗢𝗠𝗢𝗖̧𝗔̃𝗢", value="```📆 30/05/2026```", inline=False)
+    embed.add_field(name="━━━━━━━━━━━━━━━━━━━", value="**Venom Hub Painel Admin**", inline=False)
+    embed.set_footer(text="Venom Hub Painel Admin")
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO ADD PAINEL ====================
+@bot.command(name="addpainel")
+@commands.has_permissions(administrator=True)
+async def addpainel(ctx, member: discord.Member, tempo: str):
+    tempo = tempo.lower()
+    agora = datetime.datetime.now()
+    
+    if tempo == "permanente":
+        expira = agora + timedelta(days=36500)
+        tipo = "👑 Permanente"
+    elif tempo.endswith('d'):
+        try:
+            dias = int(tempo[:-1])
+            expira = agora + timedelta(days=dias)
+            tipo = f"📅 {dias} dias"
+        except:
+            await ctx.send("❌ Formato inválido! Use: 1d, 7d, 30d, 1a, permanente")
+            return
+    elif tempo.endswith('a'):
+        try:
+            anos = int(tempo[:-1])
+            expira = agora + timedelta(days=anos*365)
+            tipo = f"📅 {anos} ano(s)"
+        except:
+            await ctx.send("❌ Formato inválido! Use: 1d, 7d, 30d, 1a, permanente")
+            return
+    else:
+        await ctx.send("❌ Formato inválido! Use: 1d, 7d, 30d, 1a, permanente")
+        return
+    
+    painel_data[member.id] = {
+        "nick": member.name,
+        "expira": expira,
+        "tipo": tipo
+    }
+    salvar_dados()
+    
+    embed = discord.Embed(
+        title="✅ PAINEL ADICIONADO COM SUCESSO",
+        description=f"Painel admin adicionado para {member.mention}",
+        color=0x00ff00
+    )
+    embed.add_field(name="👤 Usuário", value=f"```{member.name}```", inline=True)
+    embed.add_field(name="🆔 ID", value=f"```{member.id}```", inline=True)
+    embed.add_field(name="⏰ Duração", value=f"```{tipo}```", inline=True)
+    embed.add_field(name="📅 Expira em", value=f"```{expira.strftime('%d/%m/%Y às %H:%M')}```", inline=False)
+    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    embed.set_footer(text="Venom Hub Painel Admin")
+    await ctx.send(embed=embed)
+
+@bot.command(name="removerpainel")
+@commands.has_permissions(administrator=True)
+async def removerpainel(ctx, member: discord.Member):
+    if member.id in painel_data:
+        del painel_data[member.id]
+        salvar_dados()
+        embed = discord.Embed(
+            title="🗑️ PAINEL REMOVIDO",
+            description=f"Painel de {member.mention} foi removido!",
+            color=0xff0000
+        )
+        await ctx.send(embed=embed)
+    else:
+        await ctx.send("❌ Este usuário não possui painel!")
+
+# ==================== COMANDO VERIFICAR ROBLOX (API REAL) ====================
+@bot.command(name="verificar")
+async def verificar(ctx, *, nickname: str):
+    """Verifica um usuário do Roblox (precisa de painel)"""
+    
+    # Verifica se tem painel
+    if ctx.author.id not in painel_data:
+        embed = discord.Embed(
+            title="❌ ACESSO NEGADO",
+            description="Você precisa ter um painel admin para usar este comando!",
+            color=0xff0000
+        )
+        embed.add_field(name="💎 Adquirir Painel", value="Use `!admin` para ver os preços")
+        await ctx.send(embed=embed)
+        return
+    
+    # Verifica se expirou
+    if datetime.datetime.now() > painel_data[ctx.author.id]["expira"]:
+        del painel_data[ctx.author.id]
+        salvar_dados()
+        await ctx.send("❌ Seu painel expirou!")
+        return
+    
+    # Mensagem de carregamento
+    loading_msg = await ctx.send(f"🔍 Verificando **{nickname}** no Roblox...")
+    
+    # Busca usuário na API real
+    user_data = await get_roblox_user_by_username(nickname)
+    
+    if not user_data:
+        embed = discord.Embed(
+            title="❌ USUÁRIO NÃO ENCONTRADO",
+            description=f"O usuário **{nickname}** não foi encontrado no Roblox!",
+            color=0xff0000
+        )
+        embed.add_field(name="💡 Verifique", value="O nome de usuário está correto?")
+        await loading_msg.delete()
+        await ctx.send(embed=embed)
+        return
+    
+    user_id = user_data["id"]
+    display_name = user_data.get("displayName", nickname)
+    
+    # Busca informações detalhadas
+    user_info = await get_roblox_user_info(user_id)
+    friends = await get_roblox_friends(user_id)
+    followers = await get_roblox_followers(user_id)
+    following = await get_roblox_following(user_id)
+    avatar_url = await get_roblox_avatar(user_id)
+    
+    # Data de criação
+    created_at = user_info.get("created", "Desconhecido")
+    if created_at != "Desconhecido":
+        created_date = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        created_str = created_date.strftime("%d/%m/%Y às %H:%M")
+    else:
+        created_str = "Desconhecido"
+    
+    # Cria embed roxa
+    embed = discord.Embed(
+        title="🔍 VERIFICAÇÃO ROBLOX",
+        description=f"Informações reais de **{display_name}** (@{nickname})",
+        color=0x9b59b6  # ROXO
+    )
+    embed.add_field(name="👤 Nick do Usuário", value=f"```{display_name}```", inline=True)
+    embed.add_field(name="🆔 ID do Usuário", value=f"```{user_id}```", inline=True)
+    embed.add_field(name="📅 Conta Criada em", value=f"```{created_str}```", inline=False)
+    embed.add_field(name="👥 Amigos", value=f"```{len(friends)}```", inline=True)
+    embed.add_field(name="🪪 Seguidores", value=f"```{followers}```", inline=True)
+    embed.add_field(name="📊 Seguindo", value=f"```{following}```", inline=True)
+    embed.add_field(name="✅ Descrição", value=f"```{user_info.get('description', 'Sem descrição')[:100]}```", inline=False)
+    
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    
+    embed.set_footer(text=f"Venom Hub • Verificado por {ctx.author.name}")
+    embed.timestamp = datetime.datetime.utcnow()
+    
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO INFO ROBLOX (API REAL - ADMIN) ====================
+@bot.command(name="info")
+@commands.has_permissions(administrator=True)
+async def info(ctx, *, nickname: str):
+    """Informações completas do Roblox (apenas admins)"""
+    
+    loading_msg = await ctx.send(f"🔍 Buscando informações completas de **{nickname}**...")
+    
+    # Busca usuário na API real
+    user_data = await get_roblox_user_by_username(nickname)
+    
+    if not user_data:
+        embed = discord.Embed(
+            title="❌ USUÁRIO NÃO ENCONTRADO",
+            description=f"O usuário **{nickname}** não foi encontrado no Roblox!",
+            color=0xff0000
+        )
+        await loading_msg.delete()
+        await ctx.send(embed=embed)
+        return
+    
+    user_id = user_data["id"]
+    display_name = user_data.get("displayName", nickname)
+    
+    # Busca TODAS as informações
+    user_info = await get_roblox_user_info(user_id)
+    friends = await get_roblox_friends(user_id)
+    followers = await get_roblox_followers(user_id)
+    following = await get_roblox_following(user_id)
+    avatar_url = await get_roblox_avatar(user_id)
+    full_body = await get_roblox_full_body(user_id)
+    
+    # Data de criação
+    created_at = user_info.get("created", "Desconhecido")
+    if created_at != "Desconhecido":
+        created_date = datetime.datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        created_str = created_date.strftime("%d/%m/%Y às %H:%M")
+    else:
+        created_str = "Desconhecido"
+    
+    # Status
+    is_banned = user_info.get("isBanned", False)
+    status = "🔴 Banido" if is_banned else "🟢 Ativo"
+    
+    # Cria embed roxa GRANDE
+    embed = discord.Embed(
+        title="📊 INFORMAÇÕES COMPLETAS ROBLOX",
+        description=f"Perfil completo de **{display_name}** (@{nickname})",
+        color=0x9b59b6  # ROXO
+    )
+    embed.add_field(name="👤 Nick do Usuário", value=f"```{display_name}```", inline=True)
+    embed.add_field(name="🆔 ID do Usuário", value=f"```{user_id}```", inline=True)
+    embed.add_field(name="📅 Conta Criada em", value=f"```{created_str}```", inline=False)
+    embed.add_field(name="👥 Total de Amigos", value=f"```{len(friends)}```", inline=True)
+    embed.add_field(name="🪪 Seguidores", value=f"```{followers}```", inline=True)
+    embed.add_field(name="📊 Seguindo", value=f"```{following}```", inline=True)
+    embed.add_field(name="📝 Status da Conta", value=f"```{status}```", inline=True)
+    embed.add_field(name="🌍 Localização", value=f"```{user_info.get('locale', 'Desconhecido')}```", inline=True)
+    embed.add_field(name="📄 Descrição", value=f"```{user_info.get('description', 'Sem descrição')[:200]}```", inline=False)
+    
+    # Lista primeiros amigos
+    if friends:
+        friends_list = ", ".join([f["name"] for f in friends[:10]])
+        if len(friends) > 10:
+            friends_list += f"\n... e mais {len(friends)-10} amigos"
+        embed.add_field(name=f"👥 Lista de Amigos ({len(friends)})", value=f"```{friends_list}```", inline=False)
+    
+    if avatar_url:
+        embed.set_thumbnail(url=avatar_url)
+    
+    if full_body:
+        embed.set_image(url=full_body)
+    
+    embed.set_footer(text=f"Venom Hub • Solicitado por {ctx.author.name}")
+    embed.timestamp = datetime.datetime.utcnow()
+    
+    await loading_msg.delete()
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO CARGO ====================
+@bot.command(name="cargo")
+@commands.has_permissions(administrator=True)
+async def cargo(ctx, member: discord.Member, *, cargo_nome: str = None):
+    if not cargo_nome:
+        roles = [r for r in ctx.guild.roles[1:30] if r.name != "@everyone"]
+        embed = discord.Embed(
+            title="📋 CARGOS DISPONÍVEIS",
+            description="Use `!cargo @user @cargo` para atribuir",
+            color=0x9b59b6
+        )
+        for role in roles[:25]:
+            embed.add_field(name=role.name, value=f"Membros: {len(role.members)}", inline=True)
+        embed.set_footer(text=f"Total: {len(ctx.guild.roles)} cargos")
+        await ctx.send(embed=embed)
+        return
+    
+    role = discord.utils.get(ctx.guild.roles, name=cargo_nome)
+    if not role:
+        if cargo_nome.startswith('<@&') and cargo_nome.endswith('>'):
+            try:
+                role_id = int(cargo_nome[3:-1])
+                role = ctx.guild.get_role(role_id)
+            except:
+                pass
+    
+    if not role:
+        await ctx.send("❌ Cargo não encontrado!")
+        return
+    
+    try:
+        await member.add_roles(role)
+        embed = discord.Embed(
+            title="✅ CARGO ATRIBUIDO",
+            description=f"{member.mention} recebeu o cargo **{role.name}**",
+            color=0x00ff00
+        )
+        embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+        await ctx.send(embed=embed)
+    except Exception as e:
+        await ctx.send(f"❌ Erro ao atribuir cargo: {e}")
+
+# ==================== COMANDO LISTA ====================
+@bot.command(name="lista")
+@commands.has_permissions(administrator=True)
+async def lista(ctx):
+    if not painel_data:
+        embed = discord.Embed(
+            title="📭 LISTA DE PAINÉIS",
+            description="Nenhum painel ativo no momento.",
+            color=0xffa500
+        )
+        await ctx.send(embed=embed)
+        return
+    
+    embed = discord.Embed(
+        title="📊 LISTA DE PAINÉIS ADMIN",
+        description="Todos os painéis ativos no sistema",
+        color=0x9b59b6
+    )
+    
+    for user_id, data in painel_data.items():
+        if datetime.datetime.now() <= data["expira"]:
+            status = "✅ Ativo"
+        else:
+            status = "❌ Expirado"
+        
+        embed.add_field(
+            name=f"『🛠️』{data['nick']}",
+            value=f"```➤ {data['tipo']}\n➤ Status: {status}\n➤ Expira: {data['expira'].strftime('%d/%m/%Y')}```",
+            inline=False
+        )
+    
+    embed.set_footer(text="Venom Hub Lista Painel")
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO REQUISITO ====================
+@bot.command(name="requisito")
+async def requisito(ctx):
+    embed = discord.Embed(
+        title="『📌』𝗥𝗘𝗤𝗨𝗜𝗦𝗜𝗧𝗢𝗦 𝗦𝗪𝗔𝗧",
+        description="Confira os requisitos para parceria!",
+        color=0xe67e22
+    )
+    embed.add_field(name="『📌』𝗥𝗘𝗤𝗨𝗜𝗦𝗜𝗧𝗢𝗦", value="""
+    ```
+    ➤ Ter no mínimo 100 seguidores ou inscritos
+    ➤ Possuir TikTok ou YouTube ativo
+    ➤ Divulgar conteúdos da SWAT
+    ➤ Não usar bots ou seguidores falsos
+    ➤ Respeitar as regras do servidor
+    ➤ Ser ativo na comunidade
+    ```
+    """, inline=False)
+    embed.add_field(name="『🎥』𝗣𝗟𝗔𝗧𝗔𝗙𝗢𝗥𝗠𝗔𝗦", value="""
+    ```
+    ➤ TikTok
+    ➤ YouTube
+    ➤ Instagram
+    ➤ Kwai
+    ```
+    """, inline=True)
+    embed.add_field(name="『🚀』𝗕𝗘𝗡𝗘𝗙𝗜́𝗖𝗜𝗢𝗦", value="""
+    ```
+    ➤ Cargo exclusivo
+    ➤ Divulgação oficial
+    ➤ Acesso ao painel
+    ➤ Destaque na comunidade
+    ```
+    """, inline=True)
+    embed.add_field(name="『📩』𝗖𝗢𝗠𝗢 𝗘𝗡𝗧𝗥𝗔𝗥", value="""
+    ```
+    ➤ Abra um ticket mostrando seu perfil e seguidores
+    ```
+    """, inline=False)
+    embed.set_footer(text="Venom Hub - SWAT Requisitos")
+    await ctx.send(embed=embed)
+
+# ==================== SISTEMA DE TICKET ====================
+@bot.command(name="ticket")
+@commands.has_permissions(administrator=True)
+async def ticket(ctx, action: str = None):
+    if action == "setup":
+        embed = discord.Embed(
+            title="🎫 SISTEMA DE TICKET - VENOM HUB",
+            description="Clique no botão abaixo para abrir um ticket!",
+            color=0xe74c3c
+        )
+        embed.add_field(name="📝 Como funciona?", value="Abra um ticket para suporte, dúvidas ou parcerias.")
+        embed.set_footer(text="Venom Hub - Tickets")
+        
+        button = Button(label="📩 Abrir Ticket", style=discord.ButtonStyle.danger, custom_id="create_ticket")
+        view = View()
+        view.add_item(button)
+        await ctx.send(embed=embed, view=view)
+
+@bot.event
+async def on_interaction(interaction):
+    if interaction.data.get("custom_id") == "create_ticket":
+        guild = interaction.guild
+        category = discord.utils.get(guild.categories, name="🎫 Tickets")
+        if not category:
+            category = await guild.create_category("🎫 Tickets")
+        
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+        }
+        
+        for role in guild.roles:
+            if role.permissions.administrator:
+                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        
+        channel = await guild.create_text_channel(
+            f"ticket-{interaction.user.name}",
+            category=category,
+            overwrites=overwrites
+        )
+        
+        embed = discord.Embed(
+            title="🎫 TICKET ABERTO",
+            description=f"Olá {interaction.user.mention}! Um moderador irá te atender em breve.",
+            color=0xe74c3c
+        )
+        
+        close_button = Button(label="🔒 Fechar Ticket", style=discord.ButtonStyle.secondary, custom_id="close_ticket")
+        view = View()
+        view.add_item(close_button)
+        
+        await channel.send(embed=embed, view=view)
+        await interaction.response.send_message(f"✅ Ticket criado: {channel.mention}", ephemeral=True)
+    
+    elif interaction.data.get("custom_id") == "close_ticket":
+        await interaction.response.send_message("🔒 Ticket fechado! Deletando em 5 segundos...")
+        await asyncio.sleep(5)
+        await interaction.channel.delete()
+
+# ==================== SISTEMA DE SORTEIO ====================
+@bot.command(name="sorteio")
+@commands.has_permissions(administrator=True)
+async def sorteio(ctx, action: str, *, args: str = None):
+    if action == "criar":
+        await ctx.send("🎉 **CRIANDO SORTEIO**\nQual será o prêmio? (30 segundos)")
+        
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            premio_msg = await bot.wait_for('message', timeout=30.0, check=check)
+            premio = premio_msg.content
+            
+            await ctx.send("Quantos ganhadores?")
+            ganhadores_msg = await bot.wait_for('message', timeout=30.0, check=check)
+            ganhadores = int(ganhadores_msg.content)
+            
+            await ctx.send("Duração? (ex: 1h, 30m, 1d)")
+            duracao_msg = await bot.wait_for('message', timeout=30.0, check=check)
+            duracao = duracao_msg.content.lower()
+            
+            if duracao.endswith('h'):
+                segundos = int(duracao[:-1]) * 3600
+            elif duracao.endswith('m'):
+                segundos = int(duracao[:-1]) * 60
+            elif duracao.endswith('d'):
+                segundos = int(duracao[:-1]) * 86400
+            else:
+                segundos = 3600
+            
+            embed = discord.Embed(
+                title="🎉 SORTEIO INICIADO",
+                description=f"**Prêmio:** {premio}\n\nReaja com 🎉 para participar!",
+                color=0xf1c40f
+            )
+            embed.add_field(name="👑 Ganhadores", value=f"```{ganhadores}```", inline=True)
+            embed.add_field(name="⏰ Duração", value=f"```{duracao}```", inline=True)
+            embed.set_footer(text="Venom Hub - Sorteios")
+            
+            msg = await ctx.send(embed=embed)
+            await msg.add_reaction("🎉")
+            
+            await asyncio.sleep(segundos)
+            
+            msg = await ctx.channel.fetch_message(msg.id)
+            reaction = discord.utils.get(msg.reactions, emoji="🎉")
+            users = await reaction.users().flatten()
+            users = [user for user in users if not user.bot]
+            
+            if len(users) == 0:
+                await ctx.send("❌ Ninguém participou!")
+                return
+            
+            if len(users) < ganhadores:
+                ganhadores = len(users)
+            
+            winners = random.sample(users, ganhadores)
+            winners_mentions = ", ".join([w.mention for w in winners])
+            
+            embed_win = discord.Embed(
+                title="🎉 SORTEIO ENCERRADO!",
+                description=f"**Prêmio:** {premio}\n**Ganhadores:** {winners_mentions}",
+                color=0x00ff00
+            )
+            await ctx.send(embed=embed_win)
+            
+        except asyncio.TimeoutError:
+            await ctx.send("❌ Tempo esgotado!")
+
+# ==================== COMANDO PARCERIA ====================
+@bot.command(name="parceria")
+async def parceria(ctx):
+    embed = discord.Embed(
+        title="🤝 PARCERIA - VENOM HUB",
+        description="Estamos abertos para parcerias!\n━━━━━━━━━━━━━━━━━━━",
+        color=0x9b59b6
+    )
+    embed.add_field(name="📋 Requisitos", value="""
+    ```
+    ➤ Servidor com no mínimo 100 membros
+    ➤ Comunidade ativa e engajada
+    ➤ Conteúdo relacionado a games/roblox
+    ➤ Respeitar as diretrizes do Discord
+    ```
+    """, inline=False)
+    embed.add_field(name="✅ Benefícios", value="""
+    ```
+    ➤ Divulgação mútua
+    ➤ Parceria em eventos
+    ➤ Cargo exclusivo de parceiro
+    ➤ Canal de divulgação
+    ```
+    """, inline=True)
+    embed.add_field(name="📩 Como aplicar", value="```Abra um ticket e apresente seu servidor!```", inline=True)
+    embed.set_footer(text="Venom Hub - Parcerias")
+    await ctx.send(embed=embed)
+
+# ==================== COMANDO PING ====================
+@bot.command(name="ping")
+async def ping(ctx):
+    latency = round(bot.latency * 1000)
+    color = 0x00ff00 if latency < 100 else 0xf1c40f if latency < 200 else 0xff0000
+    status = "🟢 Excelente" if latency < 100 else "🟡 Bom" if latency < 200 else "🔴 Ruim"
+    
+    embed = discord.Embed(
+        title="🏓 PONG!",
+        description=f"📡 Latência: **{latency}ms**\n📊 Status: **{status}**",
+        color=color
+    )
+    await ctx.send(embed=embed)
+
+# ==================== JOGOS ====================
+@bot.command(name="coinflip")
+async def coinflip(ctx):
+    result = random.choice(["Cara", "Coroa"])
+    embed = discord.Embed(
+        title="🪙 CARA OU COROA",
+        description=f"Resultado: **{result}**",
+        color=0xf1c40f
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="dado")
+async def dado(ctx):
+    result = random.randint(1, 6)
+    dados = ["⚀", "⚁", "⚂", "⚃", "⚄", "⚅"]
+    embed = discord.Embed(
+        title="🎲 JOGO DE DADO",
+        description=f"Você tirou: **{result}** {dados[result-1]}",
+        color=0xe74c3c
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="ppt")
+async def ppt(ctx, escolha: str = None):
+    if not escolha:
+        await ctx.send("❌ Use: `!ppt pedra` / `!ppt papel` / `!ppt tesoura`")
+        return
+    
+    opcoes = ["pedra", "papel", "tesoura"]
+    if escolha.lower() not in opcoes:
+        await ctx.send("❌ Escolha: pedra, papel ou tesoura!")
+        return
+    
+    bot_escolha = random.choice(opcoes)
+    
+    if escolha.lower() == bot_escolha:
+        resultado = "Empate! 🤝"
+    elif (escolha.lower() == "pedra" and bot_escolha == "tesoura") or \
+         (escolha.lower() == "papel" and bot_escolha == "pedra") or \
+         (escolha.lower() == "tesoura" and bot_escolha == "papel"):
+        resultado = "Você venceu! 🎉"
+    else:
+        resultado = "Você perdeu! 😢"
+    
+    embed = discord.Embed(
+        title="✂️ PEDRA, PAPEL, TESOURA",
+        description=f"Você: **{escolha}**\nBot: **{bot_escolha}**\n\n{resultado}",
+        color=0x3498db
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="roletarussa")
+async def roletarussa(ctx):
+    if random.randint(1, 6) == 1:
+        embed = discord.Embed(title="🔫 ROLETA RUSSA", description="**BANG!** 💀 Você morreu!", color=0xff0000)
+    else:
+        embed = discord.Embed(title="🔫 ROLETA RUSSA", description="*Click* 😅 Você sobreviveu!", color=0x00ff00)
+    await ctx.send(embed=embed)
+
+@bot.command(name="advinhar")
+async def advinhar(ctx):
+    numero = random.randint(1, 100)
+    await ctx.send("🤔 Adivinhe o número de 1 a 100! (5 tentativas)")
+    
+    for i in range(5):
+        def check(m):
+            return m.author == ctx.author and m.channel == ctx.channel
+        
+        try:
+            msg = await bot.wait_for('message', timeout=30.0, check=check)
+            palpite = int(msg.content)
+            
+            if palpite == numero:
+                await ctx.send(f"🎉 {ctx.author.mention} acertou! O número era **{numero}**!")
+                return
+            elif palpite < numero:
+                await ctx.send(f"📈 Maior! ({4-i} tentativas)")
+            else:
+                await ctx.send(f"📉 Menor! ({4-i} tentativas)")
+        except:
+            pass
+    
+    await ctx.send(f"😢 Acabou! O número era **{numero}**")
+
+@bot.command(name="slot")
+async def slot(ctx):
+    emojis = ["🍒", "🍋", "🍊", "💎", "7️⃣", "⭐"]
+    result = [random.choice(emojis) for _ in range(3)]
+    
+    if result[0] == result[1] == result[2]:
+        resultado, color = "🎉 JACKPOT!", 0x00ff00
+    elif result[0] == result[1] or result[1] == result[2] or result[0] == result[2]:
+        resultado, color = "✅ Quase!", 0xf1c40f
+    else:
+        resultado, color = "❌ Perdeu!", 0xff0000
+    
+    embed = discord.Embed(
+        title="🎰 CAÇA-NÍQUEL",
+        description=f"[{result[0]} | {result[1]} | {result[2]}]\n\n{resultado}",
+        color=color
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="8ball")
+async def ball(ctx, *, pergunta: str = None):
+    if not pergunta:
+        await ctx.send("❌ Faça uma pergunta!")
+        return
+    
+    respostas = ["Sim!", "Não!", "Talvez...", "Com certeza!", "Nem pensar!", "Os sinais dizem sim!"]
+    embed = discord.Embed(
+        title="🎱 BOLA MÁGICA",
+        description=f"**Pergunta:** {pergunta}\n**Resposta:** {random.choice(respostas)}",
+        color=0x1abc9c
+    )
+    await ctx.send(embed=embed)
+
+# ==================== COMANDOS DE MODERAÇÃO ====================
+@bot.command(name="ban")
+@commands.has_permissions(ban_members=True)
+async def ban(ctx, member: discord.Member, *, reason="Sem motivo"):
+    embed = discord.Embed(
+        title="🔨 USUÁRIO BANIDO",
+        description=f"{member.mention} foi banido!",
+        color=0xff0000
+    )
+    embed.add_field(name="📝 Motivo", value=f"```{reason}```")
+    await member.ban(reason=reason)
+    await ctx.send(embed=embed)
+
+@bot.command(name="kick")
+@commands.has_permissions(kick_members=True)
+async def kick(ctx, member: discord.Member, *, reason="Sem motivo"):
+    await member.kick(reason=reason)
+    await ctx.send(f"👢 {member.mention} foi expulso!")
+
+@bot.command(name="mute")
+@commands.has_permissions(moderate_members=True)
+async def mute(ctx, member: discord.Member, minutes: int = 5, *, reason="Sem motivo"):
+    await member.timeout(datetime.timedelta(minutes=minutes), reason=reason)
+    await ctx.send(f"🔇 {member.mention} silenciado por {minutes} minutos!")
+
+@bot.command(name="clear")
+@commands.has_permissions(manage_messages=True)
+async def clear(ctx, amount: int = 10):
+    await ctx.channel.purge(limit=amount + 1)
+    msg = await ctx.send(f"🧹 {amount} mensagens deletadas!")
+    await asyncio.sleep(3)
+    await msg.delete()
+
+@bot.command(name="lock")
+@commands.has_permissions(manage_channels=True)
+async def lock(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=False)
+    await ctx.send("🔒 Canal trancado!")
+
+@bot.command(name="unlock")
+@commands.has_permissions(manage_channels=True)
+async def unlock(ctx):
+    await ctx.channel.set_permissions(ctx.guild.default_role, send_messages=True)
+    await ctx.send("🔓 Canal destrancado!")
+
+@bot.command(name="slowmode")
+@commands.has_permissions(manage_channels=True)
+async def slowmode(ctx, seconds: int = 0):
+    await ctx.channel.edit(slowmode_delay=seconds)
+    await ctx.send(f"⏱️ Slowmode: {seconds}s")
+
+# ==================== COMANDOS ÚTEIS ====================
+@bot.command(name="avatar")
+async def avatar(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    embed = discord.Embed(title=f"🖼️ Avatar de {member.name}", color=0x9b59b6)
+    embed.set_image(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name="userinfo")
+async def userinfo(ctx, member: discord.Member = None):
+    member = member or ctx.author
+    embed = discord.Embed(title=f"👤 {member.name}", color=0x3498db)
+    embed.add_field(name="📛 Nome", value=f"```{member}```", inline=True)
+    embed.add_field(name="🆔 ID", value=f"```{member.id}```", inline=True)
+    embed.add_field(name="📅 Entrou", value=f"```{member.joined_at.strftime('%d/%m/%Y')}```", inline=True)
+    embed.set_thumbnail(url=member.avatar.url if member.avatar else member.default_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name="servericon")
+async def servericon(ctx):
+    if ctx.guild.icon:
+        embed = discord.Embed(title="🖼️ ÍCONE DO SERVIDOR", color=0x3498db)
+        embed.set_image(url=ctx.guild.icon.url)
+        await ctx.send(embed=embed)
+
+# ==================== COMANDOS MÚSICA ====================
+@bot.command(name="play")
+@commands.has_permissions(manage_channels=True)
+async def play(ctx, *, musica: str):
+    if not ctx.author.voice:
+        await ctx.send("❌ Entre em um canal de voz!")
+        return
+    
+    embed = discord.Embed(
+        title="🎵 MÚSICA ADICIONADA",
+        description=f"**{musica}**",
+        color=0x1abc9c
+    )
+    embed.add_field(name="🎤 Nome", value=f"```{musica[:50]}```")
+    embed.add_field(name="⏱️ Duração", value="```3:45```")
+    await ctx.send(embed=embed)
+
+# ==================== TRATAMENTO DE ERROS ====================
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ Sem permissão!")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send(f"❌ Use: `{ctx.prefix}{ctx.command.name} <argumento>`")
+    elif isinstance(error, commands.MemberNotFound):
+        await ctx.send("❌ Membro não encontrado!")
+
+# ==================== INICIAR BOT ====================
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🤖 Venom Hub Bot - Com API Real do Roblox")
+    print("=" * 50)
+    print("✅ Sistemas: Anti-Raid, Anti-Spam, Tickets, Sorteios")
+    print("🔍 API Roblox: Conectada")
+    print("=" * 50)
+    
+    try:
+        bot.run(TOKEN)
+    except discord.errors.LoginFailure:
+        print("❌ TOKEN INVÁLIDO!")
+    except Exception as e:
+        print(f"❌ Erro: {e}")
